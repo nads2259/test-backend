@@ -1,0 +1,53 @@
+parameters:
+    upload_directory: '%kernel.project_dir%/var/uploads'
+    notification_from_email: '%env(resolve:NOTIFICATION_FROM_EMAIL)%'
+    rule_engine.high_vulnerability_threshold: '%env(int:RULE_ENGINE_HIGH_VULN_THRESHOLD)%'
+    rule_engine.stuck_minutes: '%env(int:RULE_ENGINE_STUCK_MINUTES)%'
+    smtp.host: '%env(resolve:SMTP_HOST)%'
+    smtp.port: '%env(int:SMTP_PORT)%'
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    App\:
+        resource: '../src/'
+        exclude:
+            - '../src/DependencyInjection/'
+            - '../src/Entity/'
+            - '../src/Kernel.php'
+
+    # File upload service
+    App\Service\FileUploadService:
+        arguments:
+            $uploadDir: '%upload_directory%'
+
+    # Debricked client
+    App\Service\DebrickedClient:
+        arguments:
+            $http: '@http_client'
+            $apiBaseUrl: '%env(DEBRICKED_API_BASE_URL)%'
+            $apiToken: '%env(DEBRICKED_API_TOKEN)%'
+            $logger: '@logger'
+
+    # ProcessUploadMessageHandler needs uploadDir injected
+    App\MessageHandler\ProcessUploadMessageHandler:
+        arguments:
+            $uploadDir: '%upload_directory%'
+
+    App\Service\NotificationService:
+        arguments:
+            $fromEmail: '%notification_from_email%'
+            $defaultSlackWebhook: '%env(default::SLACK_DEFAULT_WEBHOOK)%'
+            $smtpHost: '%smtp.host%'
+            $smtpPort: '%smtp.port%'
+
+    App\RuleEngine\RuleEngine:
+        arguments:
+            $highVulnerabilityThreshold: '%rule_engine.high_vulnerability_threshold%'
+            $stuckMinutes: '%rule_engine.stuck_minutes%'
+
+    App\Command\RunRuleEngineCommand:
+        tags:
+            - { name: 'console.command', command: 'app:rules:run' }

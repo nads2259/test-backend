@@ -1,0 +1,126 @@
+version: '3.3'
+
+volumes:
+    database_data:
+        driver: local
+    database_data_new:
+        driver: local
+    rabbitmqetc:
+        driver: local
+    rabbitmqdata:
+        driver: local
+    rabbitmqlogs:
+        driver: local
+
+networks:
+    default:
+        external:
+            name: backend
+    backend:
+        driver: bridge
+    frontend:
+        driver: bridge
+
+services:
+    mailhog:
+        image: mailhog/mailhog:v1.0.1
+        ports:
+            - "1025:1025"
+            - "8025:8025"
+        networks:
+            - backend
+
+    db:
+        platform: linux/amd64
+        image: mysql:8.0
+        ports:
+            - "3307:3306"
+        volumes:
+            - database_data_new:/var/lib/mysql
+        environment:
+            MYSQL_ROOT_PASSWORD: docker
+        restart: on-failure
+        networks:
+            - backend
+
+    rabbitmq:
+        image: rabbitmq:3.9-management-alpine
+        environment:
+            RABBITMQ_ERLANG_COOKIE: rabbitmqcookie
+            RABBITMQ_DEFAULT_USER: rabbit
+            RABBITMQ_DEFAULT_PASS: docker
+        volumes:
+            - rabbitmqetc:/etc/rabbitmq/
+            - rabbitmqdata:/var/lib/rabbitmq/
+            - rabbitmqlogs:/var/log/rabbitmq/
+        networks:
+            - backend
+        restart: on-failure
+        ports:
+            - "5672:5672"
+            - "15672:15672"
+
+    php:
+        image: ghcr.io/debricked/docker-image-php-xdebug:latest
+        environment:
+            # Reference https://gist.github.com/jehaby/61a89b15571b4bceee2417106e80240d
+            PHP_IDE_CONFIG: "serverName=docker.php.cli"
+            BLACKFIRE_SERVER_ID: ${BLACKFIRE_SERVER_ID}
+            BLACKFIRE_SERVER_TOKEN: ${BLACKFIRE_SERVER_TOKEN}
+            BLACKFIRE_CLIENT_ID: ${BLACKFIRE_CLIENT_ID}
+            BLACKFIRE_CLIENT_TOKEN: ${BLACKFIRE_CLIENT_TOKEN}
+            BLACKFIRE_SOCKET: tcp://webserver:8707
+            REDIS_HOST: redis
+            REDIS_PORT: 6379
+            IN_DOCKER: "true"
+            RULE_ENGINE_INTERVAL_SECONDS: ${RULE_ENGINE_INTERVAL_SECONDS:-60}
+        expose:
+            - 9000
+            - 9001
+        ports:
+            - "8000:8000"
+        volumes:
+            - ./:/var/www/html
+        depends_on:
+            - db
+            - rabbitmq
+            - mailhog
+        entrypoint:
+            - /bin/sh
+            - -c
+            - |
+                ip -4 route list match 0/0 | awk '{print $$3" host.docker.internal"}' >> /etc/hosts
+                while true; do
+                    php /var/www/html/bin/console app:rules:run || true
+                    sleep "${RULE_ENGINE_INTERVAL_SECONDS:-60}"
+                done &
+                php-fpm --allow-to-run-as-root
+        restart: on-failure
+        tty: true
+        user: root
+        shm_size: 2g
+        networks:
+            - backend
+
+    nginx:
+        image: nginx:latest
+        environment:
+            # Exposes the host Blackfire IDs and tokens environment variables.
+            BLACKFIRE_SERVER_ID: ${BLACKFIRE_SERVER_ID}
+            BLACKFIRE_SERVER_TOKEN: ${BLACKFIRE_SERVER_TOKEN}
+            BLACKFIRE_CLIENT_ID: ${BLACKFIRE_CLIENT_ID}
+            BLACKFIRE_CLIENT_TOKEN: ${BLACKFIRE_CLIENT_TOKEN}
+            BLACKFIRE_SOCKET: tcp://webserver:8707
+        ports:
+            - "8888:80"
+            - "8707:8707"
+        volumes:
+            - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+            - ./:/var/www/html
+        depends_on:
+            - php
+        restart: on-failure
+        user: root
+        networks:
+            - backend
+            - frontend
